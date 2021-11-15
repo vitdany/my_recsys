@@ -30,14 +30,17 @@ class MainRecommender:
     def __init__(self, data, item_features, weighting=True):
         # your_code. Это не обязательная часть. Но если вам удобно что-либо посчитать тут - можно это сделать
 
-        self.user_item_matrix = self.prepare_matrix(data, item_features)  # pd.DataFrame
+        self.user_item_matrix, self.result = self.prepare_matrix(data, item_features)  # pd.DataFrame
+
+        self.sparse_user_item = csr_matrix(self.user_item_matrix)
+
         self.id_to_itemid, self.id_to_userid, self.itemid_to_id, self.userid_to_id = self.prepare_dicts(
             self.user_item_matrix)
 
         if weighting:
             self.user_item_matrix = bm25_weight(self.user_item_matrix.T).T
 
-        self.model = self.fit(self.user_item_matrix)
+        self.model = self.fit(self.sparse_user_item)
         self.own_recommender = self.fit_own_recommender(self.user_item_matrix)
 
     @staticmethod
@@ -63,9 +66,11 @@ class MainRecommender:
                                           fill_value=0
                                           )
 
-        user_item_matrix = user_item_matrix.astype(float)  # необходимый тип матрицы для implicit
+        result = data_test.groupby('user_id')['item_id'].unique().reset_index()
+        result.columns = ['user_id', 'actual']
 
-        return user_item_matrix
+
+        return user_item_matrix, result
 
     @staticmethod
     def prepare_dicts(user_item_matrix):
@@ -95,14 +100,14 @@ class MainRecommender:
         return own_recommender
 
     @staticmethod
-    def fit(user_item_matrix, num_factors=20, regularization=0.001, iterations=15, num_threads=4):
+    def fit(sparse_user_item, num_factors=20, regularization=0.001, iterations=15, num_threads=4):
         """Обучает ALS"""
 
         model = AlternatingLeastSquares(factors=num_factors,
                                         regularization=regularization,
                                         iterations=iterations,
                                         num_threads=num_threads)
-        model.fit(csr_matrix(user_item_matrix).T.tocsr())
+        model.fit(sparse_user_item.T.tocsr())
 
         return model
 
@@ -112,11 +117,11 @@ class MainRecommender:
         # your_code
         # Практически полностью реализовали на прошлом вебинаре
 
-        sparse_user_item = csr_matrix(self.user_item_matrix)
+
 
         res = [self.id_to_itemid[rec[0]] for rec in
                self.model.recommend(userid=self.userid_to_id[user],
-                                    user_items=sparse_user_item,  # на вход user-item matrix
+                                    user_items=self.sparse_user_item,  # на вход user-item matrix
                                     N=N,
                                     filter_already_liked_items=False,
                                     filter_items=[self.itemid_to_id[999999]],
@@ -132,3 +137,11 @@ class MainRecommender:
         similar_users = self.model.similar_users(userid=user, N=N)
         res = [self.get_similar_items_recommendation(i[0], 1)[0] for i in similar_users]
         return res
+
+    def get_score(self):
+
+        self.result['als'] = self.result['user_id'].apply(lambda x: self.get_similar_items_recommendation(user= x, N=5))
+        p = self.result.apply(lambda row: precision_at_k(row['als'], row['actual']), axis=1).mean()
+        r = self.result.apply(lambda row: recall_at_k(row['als'], row['actual']), axis=1).mean()
+
+        return p, r
